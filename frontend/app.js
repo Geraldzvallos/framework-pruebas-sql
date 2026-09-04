@@ -1,16 +1,24 @@
 const API_URL = "http://127.0.0.1:8000/api";
 
 function mostrarSeccion(seccion) {
+    // 1. Ocultar las pantallas
     document.getElementById('seccion-casos').style.display = 'none';
     document.getElementById('seccion-suites').style.display = 'none';
     
+    // 2. Limpiar el color azul de todo el menú
+    const links = document.querySelectorAll('.sidebar a');
+    links.forEach(link => link.classList.remove('active'));
+    
+    // 3. Mostrar la pantalla correcta y pintar su botón
     if (seccion === 'casos') {
         document.getElementById('seccion-casos').style.display = 'block';
         document.getElementById('titulo-seccion').innerText = "Gestión de Casos";
+        links[0].classList.add('active'); // Pinta Casos
         cargarCasos();
     } else if (seccion === 'suites') {
         document.getElementById('seccion-suites').style.display = 'block';
         document.getElementById('titulo-seccion').innerText = "Gestión de Suites";
+        links[1].classList.add('active'); // Pinta Suites
         cargarSuites();
     }
 }
@@ -119,23 +127,61 @@ function eliminarCaso(id) {
     });
 }
 
-// Mock para las suites
+// --- SUITES DE PRUEBAS (DINÁMICO) ---
 async function cargarSuites() {
-    const contenedor = document.getElementById("contenedor-suites");
-    contenedor.innerHTML = `
-        <div class="col-md-6">
-            <div class="card border-primary mb-3 shadow-sm">
-                <div class="card-header bg-primary text-white"><i class="bi bi-box-seam me-2"></i> Suite ID: 1</div>
-                <div class="card-body">
-                    <h5 class="card-title text-dark">Suite MVP - Pruebas DML</h5>
-                    <p class="card-text text-muted">Valida las operaciones de inserción, actualización y borrado en Oracle, verificando el Rollback automático.</p>
+    try {
+        const res = await fetch(`${API_URL}/suites/`);
+        const suites = await res.json();
+        
+        // Actualizamos el KPI de Suites
+        document.getElementById("kpi-total-suites").innerText = suites.length;
+        
+        const contenedor = document.getElementById("contenedor-suites");
+        contenedor.innerHTML = ""; 
+        
+        if (suites.length === 0) {
+            contenedor.innerHTML = `<div class="col-12 text-center text-muted mt-4">No hay suites registradas.</div>`;
+            return;
+        }
+
+        suites.forEach(s => {
+            // Contamos cuántos casos tiene asociados esta suite
+            const numCasos = s.test_cases ? s.test_cases.length : 0;
+            
+            contenedor.innerHTML += `
+                <div class="col-md-6 mb-4">
+                    <div class="card border-primary shadow-sm h-100">
+                        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+                            <span><i class="bi bi-box-seam me-2"></i> Suite ID: #${s.id}</span>
+                            <span class="badge bg-light text-primary">${numCasos} Casos</span>
+                        </div>
+                        <div class="card-body">
+                            <h5 class="card-title text-dark fw-bold">${s.name}</h5>
+                            <p class="card-text text-muted">${s.description}</p>
+                        </div>
+                        <div class="card-footer bg-transparent border-top-0 text-end">
+                            <button class="btn btn-primary" onclick="lanzarSuite(${s.id})">
+                                <i class="bi bi-play-fill me-1"></i> Ejecutar Ráfaga
+                            </button>
+                        </div>
+                    </div>
                 </div>
-                <div class="card-footer bg-transparent text-end">
-                    <button class="btn btn-primary disabled"><i class="bi bi-play-fill"></i> Ejecutar Ráfaga (Oracle Pending)</button>
-                </div>
-            </div>
-        </div>
-    `;
+            `;
+        });
+    } catch (e) {
+        console.error("Error al cargar suites:", e);
+        Swal.fire('Error', 'No se pudieron cargar las Suites de Ejecución.', 'error');
+    }
+}
+
+// Función preparada para cuando conectemos Oracle
+function lanzarSuite(id) {
+    Swal.fire({
+        title: 'Motor en Espera',
+        text: `La suite #${id} está lista, pero la conexión a Oracle objetivo aún no ha sido configurada.`,
+        icon: 'info',
+        confirmButtonText: 'Entendido'
+    });
 }
 
 // Inicializar la aplicación

@@ -31,3 +31,9 @@ def add_test_case_to_suite(suite_id: int, test_case_id: int, db: Session = Depen
     db.refresh(db_suite)
     
     return db_suite
+
+@router.get("/suites/", response_model=list[schemas.TestSuiteResponse])
+def get_all_suites(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+    """Obtiene todas las suites registradas con sus casos asociados."""
+    suites = db.query(models_suite.TestSuite).offset(skip).limit(limit).all()
+    return suites
