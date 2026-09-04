@@ -24,3 +24,16 @@ def create_test_case(test_case: schemas.TestCaseCreate, db: Session = Depends(ge
 def read_test_cases(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     test_cases = db.query(models.TestCase).offset(skip).limit(limit).all()
     return test_cases
+
+@router.delete("/test-cases/{test_case_id}", status_code=204)
+def delete_test_case(test_case_id: int, db: Session = Depends(get_db)):
+    """Elimina un caso de prueba de la base de datos."""
+    from app.models.test_case import TestCase # Importación directa y segura
+    
+    db_tc = db.query(TestCase).filter(TestCase.id == test_case_id).first()
+    if not db_tc:
+        raise HTTPException(status_code=404, detail="Caso de prueba no encontrado.")
+    
+    db.delete(db_tc)
+    db.commit()
+    return

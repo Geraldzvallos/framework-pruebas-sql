@@ -1,13 +1,13 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware 
 from app.core.database import engine, Base
 from app.models import test_case
 from app.models import history
-from app.models import suite  
+from app.models import suite
 from app.api import test_cases
 from app.api import executions
-from app.api import suites  # 1. Importamos las rutas de suites
+from app.api import suites
 
-# Creamos las tablas en SQLite (ahora creará test_cases y execution_history)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -16,9 +16,19 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# --- CONFIGURACIÓN CORS (Permite que tu frontend HTML se conecte) ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # En producción se pone el dominio real
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# -------------------------------------------------------------------
+
 app.include_router(test_cases.router, prefix="/api", tags=["Casos de Prueba"])
-app.include_router(executions.router, prefix="/api", tags=["Motor de Ejecución"]) # 2. Lo conectamos
-app.include_router(suites.router, prefix="/api", tags=["Suites de Pruebas"]) # 2. Lo conectamos
+app.include_router(executions.router, prefix="/api", tags=["Motor de Ejecución"])
+app.include_router(suites.router, prefix="/api", tags=["Suites de Pruebas"])
 
 @app.get("/")
 def read_root():
