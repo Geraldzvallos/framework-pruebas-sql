@@ -1,4 +1,4 @@
-# Framework de Pruebas Automáticas SQL
+# Framework de pruebas de base de datos SQL
 
 Este proyecto es un framework de pruebas diseñado para ejecutar, validar y auditar sentencias SQL (DML y consultas) contra bases de datos relacionales (Oracle MVP), garantizando el aislamiento transaccional y la trazabilidad de los resultados.
 
