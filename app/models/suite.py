@@ -6,7 +6,6 @@ from sqlalchemy import Column, Integer, String, Table, ForeignKey
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
-# Tabla de asociación (Muchos a Muchos) entre Suites y Casos de Prueba
 suite_test_case_table = Table(
     "suite_test_case",
     Base.metadata,
@@ -18,8 +17,10 @@ class TestSuite(Base):
     __tablename__ = "test_suites"
 
     id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id"), nullable=False, default=1)
     name = Column(String, index=True, nullable=False)
     description = Column(String, nullable=True)
 
-    # Relación con el modelo TestCase
+    project = relationship("Project", back_populates="test_suites")
     test_cases = relationship("TestCase", secondary=suite_test_case_table, backref="suites")
+    execution_histories = relationship("ExecutionHistory", back_populates="test_suite")

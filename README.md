@@ -1,24 +1,190 @@
-# Framework de pruebas de base de datos SQL
+# Framework de Pruebas de Base de Datos SQL
 
-Este proyecto es un framework de pruebas diseñado para ejecutar, validar y auditar sentencias SQL (DML y consultas) contra bases de datos relacionales (Oracle MVP), garantizando el aislamiento transaccional y la trazabilidad de los resultados.
+## 1. Nombre Oficial
+**Framework de pruebas de base de datos SQL**
 
-## 🚀 Arquitectura y Tecnologías
-*   **Lenguaje:** Python 3.x
-*   **API Web:** FastAPI + Uvicorn
-*   **ORM y Base de Datos Interna:** SQLAlchemy + SQLite (Escalable a PostgreSQL)
-*   **Conector Objetivo:** `oracledb` (Modo Thin)
-*   **Patrones de Diseño:** Strategy (Motor de Validación), Repository (Gestión de estado interno).
+## 2. Objetivo
+El objetivo del sistema es permitir definir, ejecutar, validar y registrar pruebas automáticas sobre bases de datos SQL relacionales (con Oracle como motor objetivo para el MVP), garantizando el aislamiento transaccional mediante el uso obligatorio de `ROLLBACK` y la trazabilidad de la evidencia de ejecución.
 
-## ⚙️ Estructura del Proyecto
-El código sigue una arquitectura de capas desacopladas:
-*   `/api`: Controladores y definición de endpoints (FastAPI Routers).
-*   `/core`: Configuraciones globales y conexión a la base de datos interna.
-*   `/engine`: Lógica dura del framework (TargetDatabaseExecutor y ValidationContext).
-*   `/models`: Esquemas de Pydantic y Modelos ORM de SQLAlchemy.
+## 3. Tecnologías
+- **Lenguaje:** Python 3.x
+- **API Web:** FastAPI + Uvicorn
+- **ORM y Persistencia Interna:** SQLAlchemy + SQLite (`framework_interno.db`)
+- **Conector Objetivo:** `oracledb` (Modo Thin)
+- **Analizador SQL:** `sqlparse`
+- **Pruebas y Mocks:** Pytest + FastAPI TestClient (`httpx2`)
+- **Frontend:** Vanilla HTML, CSS (Bootstrap 5) y JavaScript
 
-## 🛠️ Instrucciones de Instalación
+## 4. Arquitectura Actual
+El sistema sigue una arquitectura modular y desacoplada por capas:
+- **Frontend**: Interfaz web modular e integrada en `/ui/`. Incluye paneles de proyectos, conexiones, casos de prueba, ejecución de suites e historial con soporte móvil. Todos los endpoints funcionales comienzan con `/api`.
+- **API (Controladores / Routers)**: Endpoints REST v2 (`/api/projects`, `/api/connections`, `/api/test-cases`, `/api/suites`, `/api/history`, `/api/execute`).
+- **Core & Persistencia**: Gestión de sesión y contexto de base de datos SQLite interna (`framework_interno.db`) con soporte de claves foráneas `PRAGMA foreign_keys = ON;` y migraciones con **Alembic**.
+- **Services (Capa de Servicios Centralizada)**:
+  - `ExecutionService`: Orquestación centralizada de ejecuciones (individuales y por suite), selección de estrategia de validación (`ROW_COUNT` y `EXISTS`), formateo seguro de evidencias y registro en historial.
+  - `ProjectService`: Inicialización transparente del proyecto predeterminado ("Proyecto general", ID=1).
+- **Engine (Motor SQL y Validación)**:
+  - `TargetDatabaseExecutor`: Administración de conexiones Oracle (o simuladas en pruebas), validación estricta de sentencias (bloqueo de DDL/comandos peligrosos y múltiples sentencias) y aplicación de `ROLLBACK` obligatorio.
+  - `ValidationContext` / `RowCountValidation` / `ExistenceValidation`: Patrón Strategy para la comparación de resultados esperados vs. obtenidos.
+- **Models**: Esquemas Pydantic v2 con validación estricta de tipos de datos y modelos ORM de SQLAlchemy.
 
-1. **Clonar el repositorio y entrar a la carpeta:**
-   ```bash
-   git clone <url-del-repositorio>
-   cd framework_pruebas_sql
+## 5. Requisitos de Sistema
+- Python 3.10 o superior
+- Pip (Administrador de paquetes de Python)
+- Git
+
+## 6. Creación del Entorno Virtual
+```bash
+# Crear el entorno virtual
+python -m venv venv
+
+# Activar el entorno virtual (Linux/macOS)
+source venv/bin/activate
+
+# Activar el entorno virtual (Windows PowerShell)
+.\venv\Scripts\Activate.ps1
+```
+
+## 7. Instalación de Dependencias y Migraciones
+```bash
+pip install -r requirements.txt
+
+# Aplicar migraciones de la base de datos interna SQLite
+alembic upgrade head
+```
+
+## 8. Ejecución del Backend
+```bash
+uvicorn app.main:app --reload
+```
+La documentación interactiva estará disponible en: `http://127.0.0.1:8000/docs`
+
+## 9. Ejecución del Frontend
+El frontend se sirve desde la misma aplicación FastAPI. Después de iniciar Uvicorn, abre:
+
+```text
+http://127.0.0.1:8000/ui/
+```
+
+No abras `frontend/index.html` mediante `file://`, porque el flujo oficial utiliza el mismo origen del backend y la ruta relativa `/api`.
+
+## 10. Ejecución de Pruebas Automáticas (Pytest)
+```bash
+pytest -v
+```
+*Nota: Las pruebas automáticas corren sobre una base de datos SQLite en memoria aislada (`:memory:`) sin alterar `framework_interno.db` ni requerir una conexión Oracle real.*
+El total de pruebas de la suite completa se informa en los resultados. Oracle Database Free ya fue validado localmente (con 76 pruebas normales y 11 Oracle). La contraseña se solicita únicamente al probar o ejecutar y nunca se persiste. Para entornos de Producción, el sistema aplica una estricta política de solo lectura (SELECT).
+
+## 11. Uso del Archivo `.env.example`
+Copia la plantilla de variables de entorno y ajusta los valores locales si es necesario:
+```bash
+cp .env.example .env
+```
+Contenido de muestra:
+- `FRAMEWORK_DB_URL`: Ruta o URL de la base de datos interna.
+- `CORS_ORIGINS`: Lista de orígenes web permitidos.
+
+Los datos del perfil Oracle se registran desde la interfaz. La contraseña se solicita únicamente al probar o ejecutar y no se guarda en `.env` ni en SQLite.
+
+## 12. Funcionalidades Implementadas
+- [x] **Gestión de Proyectos (CRUD):** Creación, lectura, actualización y eliminación de proyectos. Prevención de eliminación si existen dependencias.
+- [x] **Perfiles de Conexión (CRUD sin contraseñas):** Configuración de hosts, puertos, usernames y service names. Las contraseñas NO se almacenan en SQLite (ni en texto plano ni cifradas).
+- [x] **Prueba de Conexión:** Endpoint `/api/connections/{id}/test` para validar credenciales sin guardar la contraseña.
+- [x] **Casos de Prueba con validation_type:** Soporte para estancias de validación por `ROW_COUNT` (número de filas afectadas) y `EXISTS` (verificación boolean true/false).
+- [x] **Suites de Pruebas:** Agrupación de casos pertenecientes al mismo proyecto con validaciones de integridad (mismo proyecto, sin duplicados).
+- [x] **Motor de Ejecución Centralizado y Seguridad por Entornos:** Motor SQL robusto con analizador `sqlparse`. Bloquea DDL y sentencias múltiples. Aplica reglas estrictas según entorno (`TEST`, `STAGING`, `PRODUCTION`), requiriendo confirmación para DML en preproducción y bloqueándolo absolutamente en producción (donde además se enmascaran los datos en el historial).
+- [x] **Historial Completo y Trazabilidad:** Registro persistente de ejecuciones (`ExecutionHistory`) incluyendo detalles técnicos. Límite configurable de `MAX_RESULT_ROWS` y `ORACLE_CALL_TIMEOUT_MS`.
+- [x] **Consultas con Filtros y Paginación:** Búsqueda en historial por `project_id`, `test_case_id`, `suite_id` y `status`.
+- [x] **Migraciones Alembic:** Control de versiones de esquema de base de datos SQLite con soporte para SQLite batch mode (`render_as_batch=True`).
+- [x] **Aislamiento Total en Pruebas:** Pytest 100% aislado en memoria (`:memory:`), sin modificar `framework_interno.db`.
+
+## 13. Capacidades de Despliegue
+- [x] Validación Oracle Real: Ejecución comprobada contra una base de datos Oracle XE o similar en un contenedor Docker.
+- [x] Preparación de producción y despliegue: variables, almacenamiento persistente, acceso protegido (despliegue en la nube sigue pendiente).
+
+## 14. Advertencia de Seguridad
+> [!CAUTION]
+> **POLÍTICA PARA ENTORNOS DE PRODUCCIÓN:**
+> El framework puede conectarse a entornos de producción exclusivamente bajo la clasificación `PRODUCTION`. En este modo, el sistema bloquea cualquier sentencia DML/DDL y enmascara los datos reales (filas ocultas, solo conteos visibles). Adicionalmente, el perfil de conexión debe estar configurado obligatoriamente con un usuario Oracle exclusivo que tenga **únicamente permisos de lectura (SELECT)** sobre las tablas necesarias.
+
+## 15. Explicación del Mecanismo de Rollback
+Las pruebas que modifican datos (`INSERT`, `UPDATE`, `DELETE`) deben ejecutarse sin dejar datos residuales en la base de datos objetivo.
+El flujo de ejecución es:
+1. Se abre la conexión y se desactiva `autocommit` (`autocommit = False`).
+2. Se ejecuta la sentencia DML dentro de la transacción.
+3. Se captura el número de filas afectadas (`cursor.rowcount`).
+4. Se ejecuta de forma inmediata y obligatoria `connection.rollback()`.
+5. Se verifica si el `rollback` fue aplicado exitosamente (`rollback_applied = True`).
+6. Si el `rollback` falla, la prueba es marcada automáticamente como `FAIL/ERROR` (`success = False`).
+7. **Nunca se ejecuta `COMMIT`.**
+
+## 16. Estructura de Carpetas
+
+```text
+framework_pruebas_sql/
+├── alembic/             # Control de versiones de esquemas de BD (Alembic)
+├── app/                 # Backend REST API (FastAPI)
+├── docs/                # Documentación técnica y manuales
+├── frontend/
+│   ├── index.html       # Estructura principal SPA
+│   ├── app.js           # Coordinador principal
+│   ├── css/             # Hojas de estilo
+│   └── js/              # Javascript Modular
+│       ├── core/        # Utilidades, estado y cliente HTTP
+│       └── modulos/     # Funciones específicas de cada sección
+├── infra/               # Infraestructura Docker y Compose
+├── tests/               # Pruebas automáticas (Pytest + Mocks + TestClient)
+├── framework_interno.db # Base de datos SQLite interna (desarrollo)
+└── requirements.txt     # Lista de dependencias de Python
+```
+
+## 17. Documentación y Manuales
+
+- [Referencia SRS y Arquitectura (SAD)](docs/referencia-srs-sad.md)
+- [Arquitectura](docs/arquitectura.md)
+- [Manual Técnico](docs/manual-tecnico.md)
+- [Manual de Usuario](docs/manual-usuario.md)
+- [Instalación Local](docs/instalacion-local.md)
+- [Despliegue](docs/despliegue.md)
+
+## 18. Estado Real del Despliegue
+Actualmente, el despliegue automático mediante GitHub Actions está configurado para integración continua (CI). El despliegue a un proveedor Cloud sigue pendiente de variables de entorno y DNS definitivos.
+
+## 19. Oracle Database Free para Pruebas Locales
+
+Para realizar pruebas DML completas con `ROLLBACK` contra un motor real, el proyecto ahora incluye configuración para Oracle Database Free mediante Docker.
+
+### Requisitos
+- Docker y Docker Compose
+- Recursos suficientes (el contenedor de Oracle requiere aproximadamente 2GB de RAM)
+
+### Configuración
+1. Copie el archivo `.env.oracle.example` a `.env.oracle`.
+2. Modifique las variables estableciendo contraseñas seguras para `ORACLE_PWD` y `FRAMEWORK_TEST_PASSWORD`.
+3. Inicie Oracle localmente desde el directorio `infra/oracle`.
+4. Espere el estado `healthy` del contenedor.
+5. Establezca la variable de entorno `RUN_ORACLE_TESTS=1` solo para ejecutar integración real.
+6. Ejecute por separado las pruebas normales y pruebas Oracle.
+7. ¡Precaución! No comparta, no envíe al control de versiones ni comprima nunca su archivo `.env.oracle`.
+
+### Comandos de Inicialización
+```bash
+# Iniciar la base de datos y esperar la inicialización
+cd infra/oracle
+docker compose up -d
+
+# Ver los logs para confirmar que está lista ("DATABASE IS READY TO USE")
+docker compose logs -f
+```
+
+El script de inicialización (`001_test_schema.sh`) crea automáticamente un usuario exclusivo llamado `FRAMEWORK_TEST` con permisos mínimos, y una tabla de ejemplo `FRAMEWORK_TEST_ITEMS` necesaria para la suite de integración.
+
+### Solución de Errores Comunes
+- **ORA-01017 (Invalid credential)**: Verifique que `.env.oracle` contiene `ORACLE_PWD` en lugar de `ORACLE_PASSWORD`, de acuerdo al estándar de la imagen oficial de Oracle.
+- **Contenedor lento al iniciar**: Oracle Free toma de 1 a 3 minutos en iniciar los esquemas conectables (`FREEPDB1`). Utilice `docker ps` para ver si el estado cambió a `healthy`.
+
+### Ejecutar las Pruebas de Integración Reales
+Asegúrese de que el entorno contenga las variables del archivo `.env.oracle` (puede exportarlas o usar utilidades como `python-dotenv`). Las pruebas saltarán automáticamente si las credenciales de Oracle no están presentes.
+```bash
+pytest -v -m oracle_integration
+```

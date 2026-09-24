@@ -4,18 +4,18 @@ Implementa el Patrón Strategy para evaluar dinámicamente los resultados
 de la ejecución SQL contra los criterios esperados.
 """
 from abc import ABC, abstractmethod
-from typing import Any, List
+from typing import Any, List, Dict, Union
 
 class ValidationStrategy(ABC):
     """Interfaz base que define el contrato para cualquier regla de validación."""
     
     @abstractmethod
-    def evaluate(self, execution_data: List[Any], expected_value: str) -> bool:
+    def evaluate(self, execution_data: Any, expected_value: str) -> bool:
         """
-        Evalúa el resultado de la base de datos contra el valor esperado.
+        Evalúa el resultado devuelto por la base de datos contra el valor esperado.
         
         Args:
-            execution_data: Lista de resultados devueltos por el executor SQL.
+            execution_data: Resultado entregado por TargetDatabaseExecutor (dict, list o número).
             expected_value: El valor configurado en el caso de prueba.
             
         Returns:
@@ -25,23 +25,56 @@ class ValidationStrategy(ABC):
 
 
 class RowCountValidation(ValidationStrategy):
-    """Estrategia para validar la cantidad exacta de filas devueltas."""
+    """Estrategia para validar la cantidad exacta de filas devueltas (SELECT) o afectadas (DML)."""
     
-    def evaluate(self, execution_data: List[Any], expected_value: str) -> bool:
+    def evaluate(self, execution_data: Any, expected_value: str) -> bool:
         try:
-            expected_count = int(expected_value.strip())
-            return len(execution_data) == expected_count
-        except ValueError:
+            expected_count = int(str(expected_value).strip())
+        except (ValueError, TypeError):
+            # Valor esperado no numérico devuelve resultado controlado (FAIL)
             return False
+
+        actual_count = 0
+        if isinstance(execution_data, dict):
+            # Si el ejecutor no tuvo éxito (ej. error sintáctico), la validación falla
+            if not execution_data.get("success", True):
+                return False
+
+            stmt_type = execution_data.get("statement_type", "").upper()
+            if stmt_type == "SELECT":
+                actual_count = execution_data.get("rowcount", len(execution_data.get("rows", [])))
+            else:
+                actual_count = execution_data.get("rowcount", 0)
+        elif isinstance(execution_data, list):
+            actual_count = len(execution_data)
+        elif isinstance(execution_data, int):
+            actual_count = execution_data
+        else:
+            return False
+
+        return actual_count == expected_count
 
 
 class ExistenceValidation(ValidationStrategy):
-    """Estrategia para validar si la consulta devolvió al menos un registro."""
+    """Estrategia para validar si la consulta devolvió registros o afectó filas."""
     
-    def evaluate(self, execution_data: List[Any], expected_value: str) -> bool:
-        # Si expected_value es "TRUE", verificamos que haya data. Si es "FALSE", verificamos que esté vacío.
-        expect_exists = expected_value.strip().upper() == "TRUE"
-        has_data = len(execution_data) > 0
+    def evaluate(self, execution_data: Any, expected_value: str) -> bool:
+        expect_exists = str(expected_value).strip().upper() == "TRUE"
+
+        has_data = False
+        if isinstance(execution_data, dict):
+            if not execution_data.get("success", True):
+                return False
+            stmt_type = execution_data.get("statement_type", "").upper()
+            if stmt_type == "SELECT":
+                has_data = execution_data.get("rowcount", len(execution_data.get("rows", []))) > 0
+            else:
+                has_data = execution_data.get("rowcount", 0) > 0
+        elif isinstance(execution_data, list):
+            has_data = len(execution_data) > 0
+        elif isinstance(execution_data, int):
+            has_data = execution_data > 0
+
         return has_data == expect_exists
 
 
@@ -58,6 +91,6 @@ class ValidationContext:
         """Permite cambiar la estrategia de validación dinámicamente."""
         self._strategy = strategy
 
-    def execute_validation(self, execution_data: List[Any], expected_value: str) -> bool:
+    def execute_validation(self, execution_data: Any, expected_value: str) -> bool:
         """Ejecuta la evaluación utilizando la estrategia actual."""
         return self._strategy.evaluate(execution_data, expected_value)
