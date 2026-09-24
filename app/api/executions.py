@@ -1,98 +1,138 @@
-import time
+"""
+Router de Ejecución de Pruebas SQL desacoplado utilizando el Servicio Centralizado de Ejecución.
+"""
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.models import schemas
 from app.models import test_case as models_tc
-from app.models import history as models_history
-from app.models import suite as models_suite # <-- NUEVA LÍNEA
+from app.models import suite as models_suite
+from app.models import connection as models_conn
 from app.engine.executor import TargetDatabaseExecutor
-from app.engine.validator import ValidationContext, RowCountValidation
+from app.services.execution_service import (
+    resolve_connection_credentials,
+    run_single_test_case_execution
+)
 
 router = APIRouter()
 
 @router.post("/execute/raw", response_model=schemas.ExecutionResponse)
-def execute_target_sql(request: schemas.ExecutionRequest):
-    """Ejecuta una sentencia SQL aislada sin validación (Prueba de conexión/Sintaxis)."""
-    executor = TargetDatabaseExecutor(
-        dsn=request.dsn, user=request.user, password=request.password
-    )
+def execute_target_sql(request: schemas.ExecutionRequest, db: Session = Depends(get_db)):
+    """Ejecuta una sentencia SQL aislada aplicando las políticas de seguridad del ambiente."""
     try:
-        success, data, message = executor.execute_query(request.sql_query)
-        if not success:
-            raise HTTPException(status_code=400, detail=message)
-        return schemas.ExecutionResponse(success=success, data=data, message=message)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+        dsn, user, password, profile = resolve_connection_credentials(
+            db,
+            connection_profile_id=request.connection_profile_id,
+            dsn=request.dsn,
+            user=request.user,
+            password=request.password
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Siempre tomar del perfil, si no hay perfil (DSN directo) forzar PRODUCTION
+    env_type = getattr(profile.environment_type, "value", profile.environment_type) if profile else "PRODUCTION"
+    try:
+        executor = TargetDatabaseExecutor(dsn=dsn, user=user, password=password, environment_type=env_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        res = executor.execute_query(request.sql_query, confirm_staging_dml=request.confirm_staging_dml)
+        if not res["success"]:
+            detail_msg = res.get("message") or res.get("error_message") or "Error en ejecución SQL."
+            if executor.environment_type == "PRODUCTION" and "Rechazado" not in detail_msg:
+                detail_msg = "Error oculto por políticas de seguridad (PRODUCTION)."
+            raise HTTPException(status_code=400, detail=detail_msg)
+        return schemas.ExecutionResponse(
+            success=res["success"],
+            statement_type=res["statement_type"],
+            rows=res["rows"],
+            rowcount=res["rowcount"],
+            data=res["rows"],
+            message=res["message"],
+            error_message=res.get("error_message"),
+            rollback_applied=res.get("rollback_applied", False),
+            rollback_error=res.get("rollback_error")
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=500, detail="Error interno no controlado durante la ejecución SQL.")
     finally:
         executor.disconnect()
 
+
 @router.post("/execute/test-case/{test_case_id}", response_model=schemas.HistoryResponse)
-def run_test_case(test_case_id: int, db_credentials: schemas.ExecutionRequest, db: Session = Depends(get_db)):
+def run_test_case(test_case_id: int, db_credentials: schemas.TestCaseExecutionRequest, db: Session = Depends(get_db)):
     """
-    Orquestador Principal: Recupera un caso de prueba, lo ejecuta en Oracle, 
-    valida el resultado y registra la evidencia en el historial.
+    Orquestador Principal: Recupera un caso de prueba guardado y lo ejecuta
+    utilizando el servicio centralizado de ejecución.
     """
-    # 1. Buscar el caso de prueba en nuestra BD interna
     tc = db.query(models_tc.TestCase).filter(models_tc.TestCase.id == test_case_id).first()
     if not tc:
         raise HTTPException(status_code=404, detail="Caso de prueba no encontrado.")
 
-    # Variables para la auditoría
-    start_time = time.time()
-    status = "ERROR"
-    error_msg = None
-    execution_data = []
+    if db_credentials.connection_profile_id:
+        profile = db.query(models_conn.ConnectionProfile).filter(models_conn.ConnectionProfile.id == db_credentials.connection_profile_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Perfil de conexión no encontrado.")
+        if profile.project_id != tc.project_id:
+            raise HTTPException(status_code=409, detail="El perfil de conexión no pertenece al proyecto del caso de prueba.")
 
-    # 2. Ejecutar contra Oracle
-    executor = TargetDatabaseExecutor(
-        dsn=db_credentials.dsn, user=db_credentials.user, password=db_credentials.password
-    )
-    
     try:
-        success, execution_data, db_msg = executor.execute_query(tc.sql_query)
-        if not success:
-            error_msg = db_msg
-        else:
-            # 3. Validar el resultado (Por defecto, validamos cantidad de filas para el MVP)
-            # Instanciamos el patrón Strategy
-            validator = ValidationContext(RowCountValidation())
-            is_valid = validator.execute_validation(execution_data, tc.expected_result)
-            status = "PASS" if is_valid else "FAIL"
+        dsn, user, password, profile = resolve_connection_credentials(
+            db,
+            connection_profile_id=db_credentials.connection_profile_id,
+            dsn=db_credentials.dsn,
+            user=db_credentials.user,
+            password=db_credentials.password
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    except Exception as e:
-        error_msg = str(e)
+    profile_id = profile.id if profile else db_credentials.connection_profile_id
+    env_type = getattr(profile.environment_type, "value", profile.environment_type) if profile else "PRODUCTION"
+    try:
+        executor = TargetDatabaseExecutor(dsn=dsn, user=user, password=password, environment_type=env_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
+        history_record = run_single_test_case_execution(
+            db=db,
+            tc=tc,
+            executor=executor,
+            suite_id=None,
+            connection_profile_id=profile_id,
+            confirm_staging_dml=db_credentials.confirm_staging_dml
+        )
+        return history_record
     finally:
         executor.disconnect()
 
-    # 4. Registrar en el historial de forma permanente
-    duration_ms = round((time.time() - start_time) * 1000, 2)
-    
-    history_record = models_history.ExecutionHistory(
-        test_case_id=tc.id,
-        status=status,
-        duration_ms=duration_ms,
-        executed_sql=tc.sql_query,
-        error_message=error_msg
-    )
-    db.add(history_record)
-    db.commit()
-    db.refresh(history_record)
-
-    return history_record
 
 @router.post("/execute/suite/{suite_id}", response_model=schemas.SuiteExecutionSummary)
-def run_test_suite(suite_id: int, db_credentials: schemas.ExecutionRequest, db: Session = Depends(get_db)):
+def run_test_suite(suite_id: int, db_credentials: schemas.SuiteExecutionRequest, db: Session = Depends(get_db)):
     """
-    Ejecuta en ráfaga todos los casos de prueba asociados a una Suite 
-    usando una conexión única, y devuelve un reporte consolidado.
+    Ejecuta en ráfaga todos los casos de prueba de una Suite utilizando una conexión única.
     """
-    # 1. Buscamos la suite y sus casos asociados
     suite = db.query(models_suite.TestSuite).filter(models_suite.TestSuite.id == suite_id).first()
     if not suite:
         raise HTTPException(status_code=404, detail="Suite no encontrada.")
 
-    # 2. Inicializamos el reporte gerencial
+    if db_credentials.connection_profile_id:
+        profile = db.query(models_conn.ConnectionProfile).filter(models_conn.ConnectionProfile.id == db_credentials.connection_profile_id).first()
+        if not profile:
+            raise HTTPException(status_code=404, detail="Perfil de conexión no encontrado.")
+        if profile.project_id != suite.project_id:
+            raise HTTPException(status_code=409, detail="El perfil de conexión no pertenece al proyecto de la suite.")
+
+    # Verificación de integridad: todos los casos de la suite deben pertenecer al mismo proyecto
+    for tc in suite.test_cases:
+        if tc.project_id != suite.project_id:
+            raise HTTPException(status_code=409, detail=f"Inconsistencia: el caso de prueba {tc.id} no pertenece al proyecto {suite.project_id}.")
+
     summary = schemas.SuiteExecutionSummary(
         suite_id=suite.id,
         suite_name=suite.name,
@@ -101,53 +141,48 @@ def run_test_suite(suite_id: int, db_credentials: schemas.ExecutionRequest, db: 
     )
 
     if summary.total_tests == 0:
-        return summary # Retornamos de inmediato si la suite está vacía
+        return summary
 
-    # 3. Abrimos UNA SOLA conexión a la base de datos objetivo
-    executor = TargetDatabaseExecutor(
-        dsn=db_credentials.dsn, user=db_credentials.user, password=db_credentials.password
-    )
-    
     try:
-        # 4. Iteramos y ejecutamos cada caso de prueba
+        dsn, user, password, profile = resolve_connection_credentials(
+            db,
+            connection_profile_id=db_credentials.connection_profile_id,
+            dsn=db_credentials.dsn,
+            user=db_credentials.user,
+            password=db_credentials.password
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    profile_id = profile.id if profile else db_credentials.connection_profile_id
+    env_type = getattr(profile.environment_type, "value", profile.environment_type) if profile else "PRODUCTION"
+    try:
+        executor = TargetDatabaseExecutor(dsn=dsn, user=user, password=password, environment_type=env_type)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    try:
         for tc in suite.test_cases:
-            start_time = time.time()
-            status = "ERROR"
-            error_msg = None
-            
-            success, execution_data, db_msg = executor.execute_query(tc.sql_query)
-            
-            if not success:
-                error_msg = db_msg
-            else:
-                validator = ValidationContext(RowCountValidation())
-                is_valid = validator.execute_validation(execution_data, tc.expected_result)
-                status = "PASS" if is_valid else "FAIL"
-            
-            duration_ms = round((time.time() - start_time) * 1000, 2)
-            summary.total_duration_ms += duration_ms
-            
-            # Contadores para el reporte
-            if status == "PASS": summary.passed += 1
-            elif status == "FAIL": summary.failed += 1
-            else: summary.errors += 1
-            
-            # Guardamos la evidencia en el historial
-            history_record = models_history.ExecutionHistory(
-                test_case_id=tc.id,
-                status=status,
-                duration_ms=duration_ms,
-                executed_sql=tc.sql_query,
-                error_message=error_msg
+            history_record = run_single_test_case_execution(
+                db=db,
+                tc=tc,
+                executor=executor,
+                suite_id=suite.id,
+                connection_profile_id=profile_id,
+                confirm_staging_dml=db_credentials.confirm_staging_dml
             )
-            db.add(history_record)
-            db.commit()
-            db.refresh(history_record)
-            
+
+            summary.total_duration_ms += history_record.duration_ms
+            if history_record.status == "PASS":
+                summary.passed += 1
+            elif history_record.status == "FAIL":
+                summary.failed += 1
+            else:
+                summary.errors += 1
+
             summary.details.append(history_record)
-            
+
     finally:
-        # Garantizamos que la conexión a Oracle se cierre pase lo que pase
         executor.disconnect()
 
     summary.total_duration_ms = round(summary.total_duration_ms, 2)
